@@ -1,0 +1,14 @@
+&inputpp
+    prefix = 'heo_bader'
+    outdir = './out'
+    filplot = 'heo_total_charge'
+    plot_num = 17            ! 17 extracts Valence + Core Charge Density (CRITICAL FOR METAL BADER)
+/
+&plot
+    nfile = 1
+    filepp(1) = 'heo_total_charge'
+    weight(1) = 1.0
+    iflag = 3                ! 3D plotting mode
+    output_format = 6        ! Gaussian Cube (.cube) format
+    fileout = 'heo_charge_density.cube'
+/

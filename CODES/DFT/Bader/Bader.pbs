@@ -1,0 +1,85 @@
+#!/bin/bash -l
+
+#PBS -N Bader_Analysis_HEO_Doduo
+#PBS -e pbs/Bader_${PBS_JOBID}.err
+#PBS -o pbs/Bader_${PBS_JOBID}.out
+#PBS -m abe
+#PBS -M tomas.claeys@ugent.be
+#PBS -l nodes=1:ppn=24,mem=220gb
+#PBS -l walltime=15:00:00
+
+# Load default cluster profile settings
+source ~/.bashrc
+
+cd /scratch/gent/514/vsc51474/tests_hpc
+mkdir -p out pbs
+
+module purge
+module load QuantumESPRESSO/7.4-foss-2024a
+
+export OMP_NUM_THREADS=1
+
+# 1. Clean out the broken workspace folder remnants so QE starts fresh
+rm -rf out/heo_bader.save/
+
+# =========================================================
+# PHASE 1: SELF-CONSISTENT FIELD (SCF) CALCULATION
+# =========================================================
+echo "--- Starting Quantum ESPRESSO pw.x (SCF) ---"
+mpirun -np 24 pw.x -ntg 4 -in pw.in > pw.out
+echo "--- pw.x Finished ---"
+
+# =========================================================
+# PHASE 2: TOTAL CHARGE & SPIN DENSITY EXTRACTION (pp.x)
+# =========================================================
+echo "--- Generating Charge and Spin Density Grids ---"
+
+# Input to extract Valence Charge Density (Safe for mixed USPP/PAW)
+cat << EOF > pp_charge.in
+&inputpp
+    prefix = 'heo_bader'
+    outdir = './out'
+    filplot = 'heo_valence_charge'
+    plot_num = 0    ! 0 extracts Valence Charge Density
+/
+&plot
+    nfile = 1
+    filepp(1) = 'heo_valence_charge'
+    weight(1) = 1.0
+    iflag = 3
+    output_format = 6
+    fileout = 'heo_charge_density.cube'
+/
+EOF
+
+# Input to extract Spin Magnetization Density
+cat << EOF > pp_spin.in
+&inputpp
+    prefix = 'heo_bader'
+    outdir = './out'
+    filplot = 'heo_spin_density'
+    plot_num = 6    ! 6 extracts Spin Polarization (Up - Down)
+/
+&plot
+    nfile = 1
+    filepp(1) = 'heo_spin_density'
+    weight(1) = 1.0
+    iflag = 3
+    output_format = 6
+    fileout = 'heo_spin_density.cube'
+/
+EOF
+
+mpirun -np 24 pp.x -in pp_charge.in > pp_charge.out
+mpirun -np 24 pp.x -in pp_spin.in > pp_spin.out
+echo "--- pp.x Finished ---"
+!!
+# =========================================================
+# PHASE 3: HENKELMAN BADER PARTITIONING
+# =========================================================
+echo "--- Starting Bader Partitioning ---"
+# Execute the standalone compiled tool on the valence density cube grid
+./bader heo_charge_density.cube > bader.out
+echo "--- Bader Analysis Finished ---"
+
+echo "Workflow complete."

@@ -1,0 +1,14 @@
+&inputpp
+    prefix = 'heo_bader'
+    outdir = './out'
+    filplot = 'heo_spin_density'
+    plot_num = 6    ! 6 extracts Spin Polarization (Up - Down)
+/
+&plot
+    nfile = 1
+    filepp(1) = 'heo_spin_density'
+    weight(1) = 1.0
+    iflag = 3
+    output_format = 6
+    fileout = 'heo_spin_density.cube'
+/
