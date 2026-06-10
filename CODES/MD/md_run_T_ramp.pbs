@@ -1,0 +1,20 @@
+#!/bin/bash -l
+
+#PBS -N HEO_MD_Tramp_perovskite
+#PBS -e pbs/MD_Tramp_${PBS_JOBID}.err
+#PBS -o pbs/MD_Tramp_${PBS_JOBID}.out
+#PBS -m abe
+#PBS -l nodes=1:ppn=16:gpus=1,mem=64gb
+#PBS -l walltime=24:00:00
+
+
+source ~/.bashrc
+
+cd /scratch/gent/514/vsc51474/tests_hpc
+
+module load vsc-venv #
+
+
+source vsc-venv --activate --requirements requirements.txt #
+
+python md_run_T_ramp.py 
