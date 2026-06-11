@@ -1,6 +1,6 @@
 from ase.io import read, write
-traj = read(r'relaxation_V3_results\PdCuCoNiCr\Results_PdCuCoNiCr_20260507_150820\Relaxation_20260507_150820.traj',':')
+traj = read(r'geengithub\HPC_bin\MD_results\MD_500_404_perovskite\MD_500C_HEO_404_perovskite_equil.traj',':')
 
 final_frame = traj[-1]
 
-write('relaxed_PdCuCoNiCr.cif',final_frame)
+write('MD_500C_HEO_404_perovskite_finalframe.cif',final_frame)

@@ -212,142 +212,81 @@ else:
  
 # Build the temperature schedule: N evenly spaced values from
 # RAMP_START_K up to and including TARGET_TEMP_K.
+RAMP_N_STEPS = 2000                  # Number of small temperature increments
+STEPS_PER_INCREMENT = TOTAL_STEPS // RAMP_N_STEPS  # 500,000 / 2000 = 250 steps per increment
+
+# Build the complete continuous temperature array across the entire run
 ramp_temperatures = np.linspace(RAMP_START_K, TARGET_TEMP_K, RAMP_N_STEPS)
- 
-def run_ramp(atoms_in):
-    """
-    Execute (or resume) the NVT temperature ramp.
-    Returns the atoms object at the end of the ramp.
-    """
-    # --- Resume state ---
-    start_step_idx = 0
-    traj_mode      = "w"
- 
-    if os.path.exists(RAMP_META):
-        with open(RAMP_META, "rb") as fh:
-            meta = pickle.load(fh)
-        last_done = meta.get("last_completed_step_idx", -1)
- 
-        if last_done >= RAMP_N_STEPS - 1:
-            print("Temperature ramp already complete — skipping.")
-            if os.path.exists(RAMP_TRAJ):
-                atoms_out = read(RAMP_TRAJ, index=-1)
-                atoms_out.calc = CHGNetCalculator(model=model)
-            else:
-                atoms_out = atoms_in
-            return atoms_out
- 
-        if last_done >= 0:
-            start_step_idx = last_done + 1
-            traj_mode      = "a"
-            print(
-                f"Resuming ramp from step {start_step_idx}/{RAMP_N_STEPS} "
-                f"(T = {ramp_temperatures[start_step_idx]:.1f} K)..."
-            )
-            atoms_in = read(RAMP_TRAJ, index=-1)
-            atoms_in.calc = CHGNetCalculator(model=model)
- 
-    # --- Build the MD object at the first temperature we will actually run ---
-    T0 = ramp_temperatures[start_step_idx]
-    print(
-        f"\n--- NVT Temperature Ramp ---\n"
-        f"  {RAMP_START_K} K → {TARGET_TEMP_K:.2f} K "
-        f"in {RAMP_N_STEPS} steps of {RAMP_SEGMENT_STEPS} × {TIMESTEP_FS} fs "
-        f"= {RAMP_SEGMENT_STEPS * TIMESTEP_FS / 1000:.2f} ps each\n"
-        f"  Total ramp time: {RAMP_N_STEPS * RAMP_SEGMENT_STEPS * TIMESTEP_FS / 1000:.2f} ps\n"
-        f"  Starting at step index {start_step_idx}, T = {T0:.1f} K"
-    )
- 
-    md_ramp = MolecularDynamics(
-        atoms=atoms_in,
-        model=model,
-        ensemble="nvt",
-        thermostat="Nose-Hoover",
-        temperature=int(T0),
-        timestep=TIMESTEP_FS,
-        taut=TAUT_FS,
-        trajectory=RAMP_TRAJ,
-        logfile=RAMP_LOG,
-        loginterval=LOG_INTERVAL,
-    )
- 
-    # Fix trajectory mode for resume (append vs overwrite)
-    if traj_mode == "a":
-        for i, obs in enumerate(md_ramp.dyn.observers):
-            # The trajectory observer is the first one CHGNet attaches
-            if hasattr(obs[0], "write"):
-                append_traj = Trajectory(RAMP_TRAJ, mode="a", atoms=atoms_in)
-                md_ramp.dyn.observers[i] = (append_traj, obs[1], obs[2], obs[3])
-                break
- 
-    # --- Step through the ramp schedule ---
-    for step_idx in range(start_step_idx, RAMP_N_STEPS):
-        T_target = ramp_temperatures[step_idx]
- 
-        # Update thermostat target temperature in-place.
-        # ASE's set_temperature signature:
-        #   NVT_NoseHoover : set_temperature(temperature=T_eV)   [eV, not K]
-        #   NVTBerendsen   : set_temperature(temperature=T_K)     [K]
-        # CHGNet wraps ASE NVT_NoseHoover, so we pass temperature in eV.
-        # units.kB = 8.617e-5 eV/K  →  T_eV = T_K × kB
-        md_ramp.dyn.set_temperature(Temperature=T_target * units.kB)
- 
-        print(
-            f"  Ramp step {step_idx + 1:>2d}/{RAMP_N_STEPS} | "
-            f"T_target = {T_target:7.2f} K | "
-            f"running {RAMP_SEGMENT_STEPS} steps "
-            f"({RAMP_SEGMENT_STEPS * TIMESTEP_FS / 1000:.2f} ps)..."
-        )
-        md_ramp.run(RAMP_SEGMENT_STEPS)
- 
-        # Persist checkpoint after each completed segment
-        with open(RAMP_META, "wb") as fh:
-            pickle.dump({"last_completed_step_idx": step_idx}, fh)
- 
-    print("Temperature ramp complete.\n")
-    return md_ramp.atoms
- 
- 
-# Run (or resume) the ramp
-atoms = run_ramp(struct_relaxed)
- 
- 
-# ============================================================
-#  6.  CHECKPOINT LOGIC — how many production steps are done?
-# ============================================================
- 
+
+# Setup Checkpoint/Resume Tracker for the continuous run
 if os.path.exists(OBS_CSV):
     df_existing = pd.read_csv(OBS_CSV)
     steps_done = int(df_existing["Step"].max()) if len(df_existing) > 0 else 0
 else:
     steps_done = 0
- 
+
+current_increment_idx = steps_done // STEPS_PER_INCREMENT
 remaining_steps = TOTAL_STEPS - steps_done
- 
+
 if remaining_steps <= 0:
-    print("Production run already complete. Exiting.")
+    print("Continuous ramping run already complete. Exiting.")
     sys.exit(0)
- 
+
+# Load the correct starting structure frame based on progress
 if steps_done > 0 and os.path.exists(PROD_TRAJ):
-    print(
-        f"Resuming from step {steps_done} "
-        f"({steps_done * TIMESTEP_FS / 1e3:.3f} ns / "
-        f"{TOTAL_STEPS * TIMESTEP_FS / 1e3:.3f} ns)..."
-    )
+    print(f"Resuming continuous ramp from step {steps_done} (T = {ramp_temperatures[current_increment_idx]:.2f} K)...")
     atoms = read(PROD_TRAJ, index=-1)
     atoms.calc = CHGNetCalculator(model=model)
-    traj_append = True
+    traj_mode = "a"
 else:
-    print("Starting fresh production NPT run...")
-    traj_append = False
- 
-print(f"{remaining_steps} steps remaining ({remaining_steps * TIMESTEP_FS / 1e3:.3f} ns).")
- 
- 
+    print(f"Starting fresh continuous NPT ramp from {RAMP_START_K} K to {TARGET_TEMP_K} K...")
+    atoms = struct_relaxed
+    atoms.calc = CHGNetCalculator(model=model)
+    traj_mode = "w"
+
 # ============================================================
-#  7.  MSD REFERENCE POSITIONS
+#  6.  INITIALIZE MOLECULAR DYNAMICS OBJECT
 # ============================================================
- 
+
+# Initialize at the current temperature milestone
+T_start = ramp_temperatures[current_increment_idx]
+
+prod_md = MolecularDynamics(
+    atoms=atoms,
+    model=model,
+    ensemble="npt",             # Using NPT so the box expands as it heats up!
+    thermostat="Nose-Hoover",
+    temperature=int(T_start),
+    timestep=TIMESTEP_FS,
+    pressure=PRESSURE_GPa,
+    taut=TAUT_FS,
+    taup=TAUP_FS,
+    bulk_modulus=bulk_modulus_GPa,
+    trajectory=PROD_TRAJ,
+    logfile=PROD_LOG,
+    loginterval=LOG_INTERVAL,
+)
+
+prod_dyn = prod_md.dyn
+
+# Fix trajectory handler for resume appending
+if traj_mode == "a":
+    for i, obs in enumerate(prod_dyn.observers):
+        if hasattr(obs[0], "write"):
+            append_traj = Trajectory(PROD_TRAJ, mode="a", atoms=atoms)
+            prod_dyn.observers[i] = (append_traj, obs[1], obs[2], obs[3])
+            break
+
+# ============================================================
+#  7.  MSD REFERENCE POSITIONS & OBSERVERS
+# ============================================================
+
+if hasattr(atoms, "to_ase_atoms"):
+    atoms = atoms.to_ase_atoms()
+elif not hasattr(atoms, "get_positions"):
+    from pymatgen.io.ase import AseAtomsAdaptor
+    atoms = AseAtomsAdaptor.get_atoms(atoms)
+
 if os.path.exists(MSD_REF_NPY):
     ref_positions_cart = np.load(MSD_REF_NPY)
     print(f"Loaded MSD reference positions from {MSD_REF_NPY}")
@@ -355,20 +294,14 @@ else:
     ref_positions_cart = atoms.get_positions(wrap=True)
     np.save(MSD_REF_NPY, ref_positions_cart)
     print(f"Saved MSD reference positions → {MSD_REF_NPY}")
- 
- 
-# ============================================================
-#  8.  OBSERVER — thermo + magmoms + MSD
-# ============================================================
- 
-symbols         = np.array(atoms.get_chemical_symbols())
+
+symbols = np.array(atoms.get_chemical_symbols())
 unique_elements = sorted(set(symbols))
 element_indices = {el: np.where(symbols == el)[0] for el in unique_elements}
- 
 log_buffer: list[dict] = []
 csv_needs_header = not os.path.exists(OBS_CSV)
- 
- 
+
+# (Keep your _compute_msd, _atomic_write_csv, and log_observables functions exactly as they are)
 def _compute_msd(current_positions_cart: np.ndarray) -> dict[str, float]:
     disp = current_positions_cart - ref_positions_cart
     cell_lengths = np.linalg.norm(atoms.get_cell(), axis=1)
@@ -381,26 +314,20 @@ def _compute_msd(current_positions_cart: np.ndarray) -> dict[str, float]:
         msd_dict[f"MSD_{el}_A2"] = round(float(np.mean(sq_disp[idx])), 6)
     msd_dict["MSD_total_A2"] = round(float(np.mean(sq_disp)), 6)
     return msd_dict
- 
- 
+
 def _atomic_write_csv(rows: list[dict]) -> None:
     global csv_needs_header
-    df   = pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
     dir_ = os.path.dirname(OBS_CSV) or "."
-    with tempfile.NamedTemporaryFile(
-        mode="w", dir=dir_, suffix=".tmp", delete=False
-    ) as tmp:
+    with tempfile.NamedTemporaryFile(mode="w", dir=dir_, suffix=".tmp", delete=False) as tmp:
         tmp_path = tmp.name
         df.to_csv(tmp_path, mode="w", index=False, header=csv_needs_header)
     os.replace(tmp_path, OBS_CSV if csv_needs_header else OBS_CSV + ".part")
-    if csv_needs_header:
-        csv_needs_header = False
+    if csv_needs_header: csv_needs_header = False
     else:
-        with open(OBS_CSV, "a") as main, open(OBS_CSV + ".part") as part:
-            main.write(part.read())
+        with open(OBS_CSV, "a") as main, open(OBS_CSV + ".part") as part: main.write(part.read())
         os.remove(OBS_CSV + ".part")
- 
- 
+
 def log_observables():
     current_step = prod_dyn.get_number_of_steps() + steps_done
     temp  = atoms.get_temperature()
@@ -411,7 +338,7 @@ def log_observables():
         "Step":      current_step,
         "Time_ps":   round(current_step * TIMESTEP_FS / 1000.0, 4),
         "Temp_K":    round(temp,  3),
-        "Volume_A3": round(vol,   4),
+        "Volume_A3": round(vol,  4),
         "Epot_eV":   round(epot,  6),
         "Ekin_eV":   round(ekin,  6),
         "Etot_eV":   round(epot + ekin, 6),
@@ -428,59 +355,26 @@ def log_observables():
         log_buffer.clear()
     if current_step % 10_000 == 0:
         msd_tot = row["MSD_total_A2"]
-        print(
-            f"  Step {current_step:>7d}/{TOTAL_STEPS} | "
-            f"T = {temp:7.1f} K | "
-            f"V = {vol:9.3f} Å³ | "
-            f"Epot = {epot:.4f} eV | "
-            f"MSD = {msd_tot:.4f} Å²"
-        )
- 
- 
-# ============================================================
-#  9.  PRODUCTION DYNAMICS
-# ============================================================
- 
-prod_md = MolecularDynamics(
-    atoms=atoms,
-    model=model,
-    ensemble="npt",
-    thermostat="Nose-Hoover",
-    temperature=int(TARGET_TEMP_K),
-    timestep=TIMESTEP_FS,
-    pressure=PRESSURE_GPa,
-    taut=TAUT_FS,
-    taup=TAUP_FS,
-    bulk_modulus=bulk_modulus_GPa,
-    trajectory=PROD_TRAJ,
-    logfile=PROD_LOG,
-    loginterval=LOG_INTERVAL,
-)
- 
-prod_dyn = prod_md.dyn
- 
-if traj_append:
-    append_traj = Trajectory(PROD_TRAJ, mode="a", atoms=atoms)
-    prod_dyn.observers[0] = (append_traj, LOG_INTERVAL, [], {})
- 
+        print(f"  Step {current_step:>7d}/{TOTAL_STEPS} | T_real = {temp:7.1f} K | V = {vol:9.3f} Å³ | MSD = {msd_tot:.4f} Å²")
+
 prod_dyn.attach(log_observables, interval=LOG_INTERVAL)
- 
- 
+
 # ============================================================
-# 10.  RUN
+# 10.  RUN THE DYNAMIC RAMP LOOP
 # ============================================================
- 
+print(f"Executing continuous dynamic NPT ramp across remaining chunks...")
+
 try:
-    prod_md.run(remaining_steps)
+    for idx in range(current_increment_idx, RAMP_N_STEPS):
+        T_next = ramp_temperatures[idx]
+        
+        # Dynamically push the target temperature of the thermostat up in eV
+        prod_dyn.set_temperature(temperature=T_next * units.kB)
+        
+        # Run this slice segment
+        prod_md.run(STEPS_PER_INCREMENT)
 finally:
     if log_buffer:
         _atomic_write_csv(log_buffer)
         log_buffer.clear()
- 
-    final_step = steps_done + prod_dyn.get_number_of_steps()
-    print(f"\nRun ended at step {final_step} / {TOTAL_STEPS} "
-          f"({final_step * TIMESTEP_FS / 1e3:.4f} ns).")
-    print(f"Observables (thermo + magmoms + MSD) : {OBS_CSV}")
-    print(f"Trajectory                           : {PROD_TRAJ}")
-    print(f"ASE thermo log                       : {PROD_LOG}")
-    print(f"MSD reference positions              : {MSD_REF_NPY}")
+    print("\nSimulation slice loop ended cleanly.")

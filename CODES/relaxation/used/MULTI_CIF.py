@@ -6,7 +6,7 @@ from pymatgen.io.cif import CifWriter
 # =============================================================================
 #  1. USER INPUTS — Edit this block only
 # =============================================================================
-CRYSTAL_STRUCTURE = "perovskite"  # Options: "rocksalt" | "perovskite" | "spinel"
+CRYSTAL_STRUCTURE = "spinel"  # Options: "rocksalt" | "perovskite" | "spinel"
 
 ANION = "O"
 ANION_OXI = -2
@@ -27,9 +27,9 @@ PEROVSKITE_CONFIG = {
 }
 
 SPINEL_CONFIG = {
-    "A_cations": ["Fe"],
-    "B_cations": ["Cu", "Co", "Ni", "Cr"],
-    "cat_oxi": {"Fe": 2, "Cu": 2, "Co": 2, "Ni": 2, "Cr": 3},
+    "A_cations": ["Cr"],
+    "B_cations": ["Cu", "Pd", "Ni", "Co"],
+    "cat_oxi": {"Pd": 2, "Cu": 2, "Co": 2, "Ni": 2, "Cr": 3},
     "a": 8.15,
     "supercell": (2, 2, 1), #221, unit cell= 56 atoms
 }
